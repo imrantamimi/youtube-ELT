@@ -1,13 +1,20 @@
 from airflow import DAG
 import pendulum
 from datetime import datetime,timedelta
-from api.videoStats import getPlaylistId,getVideoIds,extractVideoData,saveToJson
+from airflow.operators.trigger_dagrun import TriggerDagRunOperator
+
+from api.videoStats import (
+    getPlaylistId,
+    getVideoIds,
+    extractVideoData,
+    saveToJson,
+)
 
 from datawarehouse.dwh import staging_table, core_table
 from dataquality.soda import yt_elt_data_quality
 
 # Define the local timezone
-local_tz = pendulum.timezone("Europe/Malta")
+local_tz = pendulum.timezone("Asia/Kolkata")
 
 # Default Args
 default_args = {
@@ -42,30 +49,40 @@ with DAG(
     extract_data = extractVideoData(video_ids)
     save_to_json_task = saveToJson(extract_data)
 
+    trigger_update_db = TriggerDagRunOperator(
+        task_id = "trigger_update_db",
+        trigger_dag_id = "update_db"
+    )
+
     # Define dependencies
-    playlist_id >> video_ids >> extract_data >> save_to_json_task
+    playlist_id >> video_ids >> extract_data >> save_to_json_task >> trigger_update_db
 
 with DAG(
     dag_id="update_db",
     default_args=default_args,
     description="DAG to process JSON file and insert data into both stagin and core schemas",
-    schedule="0 15 * * *",
     catchup=False,
-) as dag:
+    schedule=None,
+) as dag_update:
 
     # Define tasks
     update_staging = staging_table()
     update_core = core_table()
 
+    trigger_data_quality = TriggerDagRunOperator(
+        task_id = "trigger_data_quality",
+        trigger_dag_id = "data_quality"
+    )
+
     # Define dependencies
-    update_staging >> update_core
+    update_staging >> update_core >> trigger_data_quality
 
 with DAG(
     dag_id="data_quality",
     default_args=default_args,
     description="DAG to check the data quality on both layers in the database",
-    schedule="0 16 * * *",
     catchup=False,
+    schedule=None,
 ) as dag_quality:
 
     # Define tasks
